@@ -31,7 +31,7 @@ sudo apt-get update && sudo apt-get install awscli zstd tar jq -y
 1.  **Clone the Repository**
     Clone this repository to your server.
     ```bash
-    git clone https://gitlab.com/mechuk/r2_backup.git
+    git clone https://github.com/0FL01/r2-backup.git
     cd r2_backup
     ```
 
