@@ -62,6 +62,7 @@ Edit the `.env` file with your specific parameters.
 
 ### Optional Parameters
 
+-   `BACKUP_NAME`: Base name for the archive stored in the bucket. Timestamp and extension are appended automatically. Default: current hostname.
 -   `USE_ZSTD`: Toggle zstd compression. `true` (default) creates `.tar.zst` using `zstd`; `false` creates a plain `.tar` and does not require `zstd`.
 -   `ZSTD_LEVEL`: The `zstd` compression level. Ranges from 1 (fastest) to 22 (highest compression). (Default: `3`).
 -   `BACKUP_RETENTION_DAYS`: The number of days to keep backups. Older backups will be automatically deleted. (Default: `7`).

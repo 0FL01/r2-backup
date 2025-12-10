@@ -28,6 +28,15 @@ LOG_FILE="${LOG_FILE:-/var/log/r2-backup.log}"
 TEMP_DIR="${TEMP_DIR:-/tmp/r2-backup}"
 R2_REGION="${R2_REGION:-auto}"
 USE_ZSTD="${USE_ZSTD:-true}"
+BACKUP_NAME_RAW="${BACKUP_NAME:-}"
+if [[ -z "$BACKUP_NAME_RAW" ]]; then
+    BACKUP_NAME_RAW="$(hostname)"
+fi
+BACKUP_NAME=$(echo "$BACKUP_NAME_RAW" | xargs)
+if [[ -z "$BACKUP_NAME" ]]; then
+    BACKUP_NAME="$(hostname)"
+fi
+BACKUP_NAME="${BACKUP_NAME// /_}"
 
 # Normalize compression toggle to boolean
 USE_ZSTD_NORMALIZED=$(echo "$USE_ZSTD" | tr '[:upper:]' '[:lower:]')
@@ -95,12 +104,11 @@ cleanup() {
 # Function to create an archive (tar or tar.zst based on USE_ZSTD)
 create_backup_archive() {
     local timestamp=$(date '+%Y%m%d_%H%M%S')
-    local hostname=$(hostname)
     local archive_ext="tar"
     if [[ "$USE_ZSTD_ENABLED" == "true" ]]; then
         archive_ext="tar.zst"
     fi
-    local archive_name="backup_${hostname}_${timestamp}.${archive_ext}"
+    local archive_name="${BACKUP_NAME}_${timestamp}.${archive_ext}"
     local archive_path="${TEMP_DIR}/${archive_name}"
     local compression_label="without compression (plain tar)"
     if [[ "$USE_ZSTD_ENABLED" == "true" ]]; then
@@ -227,6 +235,7 @@ rotate_backups() {
     log "Endpoint: $R2_ENDPOINT"
     log "Bucket: $R2_BUCKET_NAME"
     log "Region: $R2_REGION"
+    log "Prefix: ${BACKUP_NAME}_"
     
     export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
     export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
@@ -243,7 +252,7 @@ rotate_backups() {
     local files_json
     files_json=$(aws s3api list-objects-v2 \
         --bucket "$R2_BUCKET_NAME" \
-        --prefix "backup_" \
+        --prefix "${BACKUP_NAME}_" \
         --endpoint-url="$R2_ENDPOINT" \
         --output json 2>&1)
     
