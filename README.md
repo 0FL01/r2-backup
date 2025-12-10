@@ -68,6 +68,7 @@ Edit the `.env` file with your specific parameters.
 -   `BACKUP_RETENTION_DAYS`: The number of days to keep backups. Older backups will be automatically deleted. (Default: `7`).
 -   `LOG_FILE`: The absolute path to the log file. (Default: `/var/log/r2-backup.log`).
 -   `TEMP_DIR`: A temporary directory for creating archives before upload. (Default: `/tmp/r2-backup`).
+-   `USE_TEMP_DIR`: When `true` (default), archives are staged in `TEMP_DIR`. When `false`, the archive is created directly in the first path from `BACKUP_PATHS` (if a file is listed, its parent directory is used).
 -   `R2_REGION`: The region for your bucket. (Default: `auto`).
 
 ## Usage

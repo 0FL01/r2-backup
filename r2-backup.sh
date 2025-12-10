@@ -26,9 +26,11 @@ BACKUP_HOUR="${BACKUP_HOUR:-4}"
 BACKUP_MINUTE="${BACKUP_MINUTE:-20}"
 LOG_FILE="${LOG_FILE:-/var/log/r2-backup.log}"
 TEMP_DIR="${TEMP_DIR:-/tmp/r2-backup}"
+USE_TEMP_DIR="${USE_TEMP_DIR:-true}"
 R2_REGION="${R2_REGION:-auto}"
 USE_ZSTD="${USE_ZSTD:-true}"
 BACKUP_NAME_RAW="${BACKUP_NAME:-}"
+WORK_DIR=""
 if [[ -z "$BACKUP_NAME_RAW" ]]; then
     BACKUP_NAME_RAW="$(hostname)"
 fi
@@ -47,6 +49,17 @@ case "$USE_ZSTD_NORMALIZED" in
         ;;
     *)
         USE_ZSTD_ENABLED=true
+        ;;
+esac
+
+USE_TEMP_DIR_NORMALIZED=$(echo "$USE_TEMP_DIR" | tr '[:upper:]' '[:lower:]')
+USE_TEMP_DIR_ENABLED=true
+case "$USE_TEMP_DIR_NORMALIZED" in
+    false|0|no|off)
+        USE_TEMP_DIR_ENABLED=false
+        ;;
+    *)
+        USE_TEMP_DIR_ENABLED=true
         ;;
 esac
 
@@ -85,19 +98,65 @@ check_dependencies() {
     done
 }
 
-# Function to create temporary directory
-create_temp_dir() {
-    if [[ -d "$TEMP_DIR" ]]; then
-        rm -rf "$TEMP_DIR"
+# Determine working directory for archive creation
+prepare_work_dir() {
+    if [[ "$USE_TEMP_DIR_ENABLED" == "true" ]]; then
+        WORK_DIR="$TEMP_DIR"
+        if [[ -d "$WORK_DIR" ]]; then
+            rm -rf "$WORK_DIR"
+        fi
+        mkdir -p "$WORK_DIR"
+        log "Using temporary directory for archive: $WORK_DIR"
+        return 0
     fi
-    mkdir -p "$TEMP_DIR"
+
+    IFS=',' read -ra PATHS <<< "$BACKUP_PATHS"
+    local first_path=""
+    for path in "${PATHS[@]}"; do
+        path=$(echo "$path" | xargs)
+        [[ -z "$path" ]] && continue
+
+        first_path="$path"
+        break
+    done
+
+    if [[ -z "$first_path" ]]; then
+        log "Error: Unable to determine working directory from BACKUP_PATHS"
+        return 1
+    fi
+
+    if [[ ! -e "$first_path" ]]; then
+        log "Error: First BACKUP_PATH does not exist: $first_path"
+        return 1
+    fi
+
+    if [[ -d "$first_path" ]]; then
+        WORK_DIR="$first_path"
+    else
+        WORK_DIR="$(dirname "$first_path")"
+    fi
+
+    if [[ ! -d "$WORK_DIR" ]]; then
+        log "Error: Working directory does not exist: $WORK_DIR"
+        return 1
+    fi
+
+    if [[ ! -w "$WORK_DIR" ]]; then
+        log "Error: Working directory is not writable: $WORK_DIR"
+        return 1
+    fi
+
+    log "Using backup source directory for archive: $WORK_DIR"
+    return 0
 }
 
 # Cleanup function
 cleanup() {
-    if [[ -d "$TEMP_DIR" ]]; then
-        log "Cleaning up temporary directory: $TEMP_DIR"
-        rm -rf "$TEMP_DIR"
+    if [[ "$USE_TEMP_DIR_ENABLED" == "true" ]]; then
+        if [[ -d "$WORK_DIR" ]]; then
+            log "Cleaning up temporary directory: $WORK_DIR"
+            rm -rf "$WORK_DIR"
+        fi
     fi
 }
 
@@ -109,7 +168,11 @@ create_backup_archive() {
         archive_ext="tar.zst"
     fi
     local archive_name="${BACKUP_NAME}_${timestamp}.${archive_ext}"
-    local archive_path="${TEMP_DIR}/${archive_name}"
+    if [[ -z "$WORK_DIR" ]]; then
+        log "Error: Working directory is not set"
+        return 1
+    fi
+    local archive_path="${WORK_DIR}/${archive_name}"
     local compression_label="without compression (plain tar)"
     if [[ "$USE_ZSTD_ENABLED" == "true" ]]; then
         compression_label="with zstd compression level $ZSTD_LEVEL"
@@ -140,10 +203,10 @@ create_backup_archive() {
     # Create an archive (optionally compressed with zstd)
     if [[ "$USE_ZSTD_ENABLED" == "true" ]]; then
         log "Executing command: tar + zstd with compression level $ZSTD_LEVEL and multithreading"
-        tar -cf - "${valid_paths[@]}" 2>/dev/null | zstd -$ZSTD_LEVEL -T0 -o "$archive_path"
+        tar -cf - --exclude="$archive_path" "${valid_paths[@]}" 2>/dev/null | zstd -$ZSTD_LEVEL -T0 -o "$archive_path"
     else
         log "Executing command: tar without compression"
-        tar -cf "$archive_path" "${valid_paths[@]}" 2>/dev/null
+        tar -cf "$archive_path" --exclude="$archive_path" "${valid_paths[@]}" 2>/dev/null
     fi
     
     # Check if archive was created successfully by verifying file existence and size
@@ -340,8 +403,10 @@ main() {
     # Check dependencies
     check_dependencies
     
-    # Create temporary directory
-    create_temp_dir
+    # Prepare working directory
+    if ! prepare_work_dir; then
+        exit 1
+    fi
     
     # Set a trap to run cleanup on script exit
     trap 'cleanup' EXIT
@@ -364,6 +429,10 @@ main() {
         log "=== STEP 2: Uploading to R2 ==="
         if upload_to_r2 "$archive_path"; then
             log "Upload to R2 completed successfully"
+            if [[ "$USE_TEMP_DIR_ENABLED" != "true" ]] && [[ -f "$archive_path" ]]; then
+                log "Removing local archive created in source directory: $archive_path"
+                rm -f "$archive_path"
+            fi
         else
             log "Error during upload to R2"
             success=false
