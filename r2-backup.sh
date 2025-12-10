@@ -27,6 +27,19 @@ BACKUP_MINUTE="${BACKUP_MINUTE:-20}"
 LOG_FILE="${LOG_FILE:-/var/log/r2-backup.log}"
 TEMP_DIR="${TEMP_DIR:-/tmp/r2-backup}"
 R2_REGION="${R2_REGION:-auto}"
+USE_ZSTD="${USE_ZSTD:-true}"
+
+# Normalize compression toggle to boolean
+USE_ZSTD_NORMALIZED=$(echo "$USE_ZSTD" | tr '[:upper:]' '[:lower:]')
+USE_ZSTD_ENABLED=true
+case "$USE_ZSTD_NORMALIZED" in
+    false|0|no|off)
+        USE_ZSTD_ENABLED=false
+        ;;
+    *)
+        USE_ZSTD_ENABLED=true
+        ;;
+esac
 
 # Required R2 variables
 required_vars=("R2_ENDPOINT" "R2_ACCESS_KEY_ID" "R2_SECRET_ACCESS_KEY" "R2_BUCKET_NAME")
@@ -51,7 +64,10 @@ log() {
 
 # Function to check dependencies
 check_dependencies() {
-    local deps=("zstd" "aws" "tar" "jq")
+    local deps=("aws" "tar" "jq")
+    if [[ "$USE_ZSTD_ENABLED" == "true" ]]; then
+        deps=("zstd" "${deps[@]}")
+    fi
     for dep in "${deps[@]}"; do
         if ! command -v "$dep" &> /dev/null; then
             log "Error: $dep is not installed"
@@ -76,14 +92,22 @@ cleanup() {
     fi
 }
 
-# Function to create an archive with zstd compression
+# Function to create an archive (tar or tar.zst based on USE_ZSTD)
 create_backup_archive() {
     local timestamp=$(date '+%Y%m%d_%H%M%S')
     local hostname=$(hostname)
-    local archive_name="backup_${hostname}_${timestamp}.tar.zst"
+    local archive_ext="tar"
+    if [[ "$USE_ZSTD_ENABLED" == "true" ]]; then
+        archive_ext="tar.zst"
+    fi
+    local archive_name="backup_${hostname}_${timestamp}.${archive_ext}"
     local archive_path="${TEMP_DIR}/${archive_name}"
+    local compression_label="without compression (plain tar)"
+    if [[ "$USE_ZSTD_ENABLED" == "true" ]]; then
+        compression_label="with zstd compression level $ZSTD_LEVEL"
+    fi
     
-    log "Creating archive: $archive_name"
+    log "Creating archive: $archive_name (${compression_label})"
     
     # Convert the paths string to an array
     IFS=',' read -ra PATHS <<< "$BACKUP_PATHS"
@@ -105,11 +129,14 @@ create_backup_archive() {
         return 1
     fi
     
-    # Create a tar archive and compress it with zstd using multithreading
-    log "Executing command: tar + zstd with compression level $ZSTD_LEVEL and multithreading"
-    
-    # Execute the command and capture both stdout and stderr
-    tar -cf - "${valid_paths[@]}" 2>/dev/null | zstd -$ZSTD_LEVEL -T0 -o "$archive_path"
+    # Create an archive (optionally compressed with zstd)
+    if [[ "$USE_ZSTD_ENABLED" == "true" ]]; then
+        log "Executing command: tar + zstd with compression level $ZSTD_LEVEL and multithreading"
+        tar -cf - "${valid_paths[@]}" 2>/dev/null | zstd -$ZSTD_LEVEL -T0 -o "$archive_path"
+    else
+        log "Executing command: tar without compression"
+        tar -cf "$archive_path" "${valid_paths[@]}" 2>/dev/null
+    fi
     
     # Check if archive was created successfully by verifying file existence and size
     if [[ -f "$archive_path" ]]; then

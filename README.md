@@ -43,7 +43,7 @@ sudo apt-get update && sudo apt-get install awscli zstd tar jq -y
 3.  **Create Configuration File**
     Create a `.env` file in the root of the project directory. You can copy the provided example if one exists.
     ```bash
-    cp .env.example .env
+    cp env.example .env
     ```
     Now, open the `.env` file and add your configuration.
 
@@ -62,6 +62,7 @@ Edit the `.env` file with your specific parameters.
 
 ### Optional Parameters
 
+-   `USE_ZSTD`: Toggle zstd compression. `true` (default) creates `.tar.zst` using `zstd`; `false` creates a plain `.tar` and does not require `zstd`.
 -   `ZSTD_LEVEL`: The `zstd` compression level. Ranges from 1 (fastest) to 22 (highest compression). (Default: `3`).
 -   `BACKUP_RETENTION_DAYS`: The number of days to keep backups. Older backups will be automatically deleted. (Default: `7`).
 -   `LOG_FILE`: The absolute path to the log file. (Default: `/var/log/r2-backup.log`).
