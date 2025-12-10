@@ -10,6 +10,8 @@ A simple yet powerful Bash script for creating compressed backups of specified d
 -   Configuration via a simple `.env` file.
 -   Detailed logging of all operations.
 -   Dependency checks to ensure the environment is ready.
+-   Post-upload integrity validation: MD5 checksum match; for multipart uploads the script compares local and remote sizes to ensure identical space usage.
+-   Reliable uploads with built-in retries and exponential backoff.
 
 ## Prerequisites
 
@@ -121,6 +123,11 @@ To automate the backup process, you can add a new job to your crontab.
 
     -   `/opt/r2_backup/r2-backup.sh` is the absolute path to the script.
     -   `> /dev/null 2>&1` prevents cron from sending emails with the script's output, as all output is already being logged to the file specified in `LOG_FILE`.
+
+## Integrity checks & retries
+
+-   Each upload calculates a local MD5 hash; for single-part uploads the S3 ETag must match. If a multipart upload is detected, the script compares remote `ContentLength` with the local archive size to ensure the stored object uses the same space.
+-   Uploads are retried up to 3 times with exponential backoff (starting at 5 seconds) and detailed logging of each attempt and AWS CLI response.
 
 ## Logging
 

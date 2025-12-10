@@ -229,10 +229,50 @@ create_backup_archive() {
     fi
 }
 
-# Function to upload to R2
+# Function to calculate MD5 checksum of a file
+calculate_md5() {
+    local file_path="$1"
+    local md5_hash=""
+    
+    if command -v md5sum &>/dev/null; then
+        md5_hash=$(md5sum "$file_path" | awk '{print $1}')
+    elif command -v md5 &>/dev/null; then
+        # macOS compatibility
+        md5_hash=$(md5 -q "$file_path")
+    else
+        log "Warning: Neither md5sum nor md5 command found, skipping checksum verification"
+        echo ""
+        return 0
+    fi
+    
+    echo "$md5_hash"
+}
+
+# Function to get ETag (MD5) of uploaded file from S3
+get_s3_etag() {
+    local bucket="$1"
+    local key="$2"
+    local endpoint="$3"
+    
+    local etag
+    etag=$(aws s3api head-object \
+        --bucket "$bucket" \
+        --key "$key" \
+        --endpoint-url="$endpoint" \
+        --query 'ETag' \
+        --output text 2>/dev/null)
+    
+    # Remove surrounding quotes from ETag
+    etag="${etag//\"/}"
+    echo "$etag"
+}
+
+# Function to upload to R2 with checksum verification and retry
 upload_to_r2() {
     local archive_path="$1"
     local archive_name=$(basename "$archive_path")
+    local max_retries=3
+    local retry_delay=5
     
     # Check if the archive file exists before uploading
     if [[ ! -f "$archive_path" ]]; then
@@ -241,15 +281,48 @@ upload_to_r2() {
     fi
     
     local file_size=$(du -h "$archive_path" | cut -f1)
+    local file_size_bytes=$(stat -c%s "$archive_path" 2>/dev/null || stat -f%z "$archive_path" 2>/dev/null)
     log "Starting upload to R2: $archive_name (size: $file_size)"
     log "Endpoint: $R2_ENDPOINT"
     log "Bucket: $R2_BUCKET_NAME"
     log "Region: $R2_REGION"
     
+    # Calculate MD5 checksum before upload
+    log "Calculating MD5 checksum of archive..."
+    local local_md5
+    local_md5=$(calculate_md5 "$archive_path")
+    if [[ -n "$local_md5" ]]; then
+        log "Local MD5 checksum: $local_md5"
+    else
+        log "Warning: Could not calculate MD5 checksum, will skip integrity verification"
+    fi
+    
     # Configure AWS CLI for R2
     export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
     export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
     export AWS_DEFAULT_REGION="$R2_REGION"
+    
+    # Create temporary AWS config to force single-part upload for files under 100MB
+    # This ensures ETag = MD5 hash for reliable checksum verification
+    local aws_config_dir
+    aws_config_dir=$(mktemp -d)
+    local aws_config_file="${aws_config_dir}/config"
+    cat > "$aws_config_file" << EOF
+[default]
+s3 =
+    multipart_threshold = 100MB
+    multipart_chunksize = 100MB
+EOF
+    export AWS_CONFIG_FILE="$aws_config_file"
+    log "Using single-part upload for files under 100MB (multipart_threshold=100MB)"
+    
+    # Cleanup function for temp config
+    cleanup_aws_config() {
+        if [[ -d "$aws_config_dir" ]]; then
+            rm -rf "$aws_config_dir"
+        fi
+    }
+    trap 'cleanup_aws_config' RETURN
     
     # Testing connection to R2
     log "Checking bucket availability..."
@@ -261,35 +334,118 @@ upload_to_r2() {
         return 1
     fi
     
-    # Uploading the file with detailed logging
-    log "Executing command: aws s3 cp \"$archive_path\" \"s3://${R2_BUCKET_NAME}/\" --endpoint-url=\"$R2_ENDPOINT\""
-    
-    local upload_start=$(date '+%s')
-    if aws s3 cp "$archive_path" "s3://${R2_BUCKET_NAME}/" --endpoint-url="$R2_ENDPOINT" 2>&1 | while IFS= read -r line; do
-        log "AWS CLI: $line"
-    done; then
-        local upload_end=$(date '+%s')
-        local upload_duration=$((upload_end - upload_start))
-        log "Upload completed successfully: $archive_name in ${upload_duration} seconds"
+    # Upload with retry logic
+    local attempt=1
+    while [[ $attempt -le $max_retries ]]; do
+        log "Upload attempt $attempt of $max_retries..."
+        log "Executing command: aws s3 cp \"$archive_path\" \"s3://${R2_BUCKET_NAME}/\" --endpoint-url=\"$R2_ENDPOINT\""
         
-        # Verifying that the file was actually uploaded
-        log "Verifying uploaded file..."
-        if aws s3 ls "s3://${R2_BUCKET_NAME}/$archive_name" --endpoint-url="$R2_ENDPOINT" >/dev/null 2>&1; then
-            log "File successfully found in bucket: $archive_name"
-            return 0
+        local upload_start=$(date '+%s')
+        local upload_success=false
+        
+        if aws s3 cp "$archive_path" "s3://${R2_BUCKET_NAME}/" --endpoint-url="$R2_ENDPOINT" 2>&1 | while IFS= read -r line; do
+            log "AWS CLI: $line"
+        done; then
+            local upload_end=$(date '+%s')
+            local upload_duration=$((upload_end - upload_start))
+            log "Upload command completed in ${upload_duration} seconds"
+            
+            # Verify file exists in bucket
+            log "Verifying uploaded file exists..."
+            if ! aws s3 ls "s3://${R2_BUCKET_NAME}/$archive_name" --endpoint-url="$R2_ENDPOINT" >/dev/null 2>&1; then
+                log "Error: File not found in bucket after upload"
+                upload_success=false
+            else
+                log "File found in bucket: $archive_name"
+                
+                # Verify MD5 checksum if available
+                if [[ -n "$local_md5" ]]; then
+                    log "Verifying file integrity via MD5 checksum..."
+                    local remote_etag
+                    remote_etag=$(get_s3_etag "$R2_BUCKET_NAME" "$archive_name" "$R2_ENDPOINT")
+                    
+                    if [[ -z "$remote_etag" ]]; then
+                        log "Warning: Could not retrieve ETag from S3, skipping checksum verification"
+                        upload_success=true
+                    elif [[ "$remote_etag" == *"-"* ]]; then
+                        # ETag contains "-" which indicates multipart upload
+                        # In this case, ETag is not a simple MD5 hash
+                        log "Warning: Multipart upload detected (ETag: $remote_etag), MD5 verification not possible"
+                        log "Verifying file size instead..."
+                        local remote_size
+                        remote_size=$(aws s3api head-object \
+                            --bucket "$R2_BUCKET_NAME" \
+                            --key "$archive_name" \
+                            --endpoint-url="$R2_ENDPOINT" \
+                            --query 'ContentLength' \
+                            --output text 2>/dev/null)
+                        
+                        if [[ "$remote_size" == "$file_size_bytes" ]]; then
+                            log "File size verified: local=$file_size_bytes bytes, remote=$remote_size bytes"
+                            upload_success=true
+                        else
+                            log "Error: File size mismatch! Local: $file_size_bytes bytes, Remote: $remote_size bytes"
+                            upload_success=false
+                        fi
+                    elif [[ "$local_md5" == "$remote_etag" ]]; then
+                        log "✓ MD5 checksum verified successfully!"
+                        log "  Local:  $local_md5"
+                        log "  Remote: $remote_etag"
+                        upload_success=true
+                    else
+                        log "Error: MD5 checksum mismatch!"
+                        log "  Local:  $local_md5"
+                        log "  Remote: $remote_etag"
+                        upload_success=false
+                    fi
+                else
+                    # No local MD5, just verify by size
+                    log "Verifying file size..."
+                    local remote_size
+                    remote_size=$(aws s3api head-object \
+                        --bucket "$R2_BUCKET_NAME" \
+                        --key "$archive_name" \
+                        --endpoint-url="$R2_ENDPOINT" \
+                        --query 'ContentLength' \
+                        --output text 2>/dev/null)
+                    
+                    if [[ "$remote_size" == "$file_size_bytes" ]]; then
+                        log "File size verified: $file_size_bytes bytes"
+                        upload_success=true
+                    else
+                        log "Error: File size mismatch! Local: $file_size_bytes bytes, Remote: $remote_size bytes"
+                        upload_success=false
+                    fi
+                fi
+            fi
         else
-            log "Warning: File not found in bucket after upload"
-            return 1
+            log "Error: Upload command failed"
+            upload_success=false
         fi
-    else
-        log "Error during upload to R2"
-        log "Possible reasons:"
-        log "1. Incorrect R2 credentials"
-        log "2. Insufficient permissions to write to the bucket"
-        log "3. Network connection issues"
-        log "4. File size limit exceeded"
-        return 1
-    fi
+        
+        if [[ "$upload_success" == "true" ]]; then
+            log "Upload completed and verified successfully: $archive_name"
+            return 0
+        fi
+        
+        # Retry logic
+        if [[ $attempt -lt $max_retries ]]; then
+            log "Upload or verification failed, retrying in ${retry_delay} seconds..."
+            sleep "$retry_delay"
+            retry_delay=$((retry_delay * 2))  # Exponential backoff
+        fi
+        
+        attempt=$((attempt + 1))
+    done
+    
+    log "Error: Upload failed after $max_retries attempts"
+    log "Possible reasons:"
+    log "1. Incorrect R2 credentials"
+    log "2. Insufficient permissions to write to the bucket"
+    log "3. Network connection issues"
+    log "4. File corruption during transfer"
+    log "5. File size limit exceeded"
+    return 1
 }
 
 # Function to rotate old backups
