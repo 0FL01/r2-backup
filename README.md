@@ -105,7 +105,7 @@ To automate the backup process, you can add a new job to your crontab.
 
 1. Copy exucutable files
    ```
-   sudo mkdir -p /opt/r2_backup && sudo cp -a r2-backup.sh .env /opt/r2_backup/
+   sudo mkdir -p /opt/r2-backup && sudo cp -a r2-backup.sh .env /opt/r2_backup/
    ```
 
 
@@ -118,7 +118,7 @@ To automate the backup process, you can add a new job to your crontab.
 
     ```crontab
     # Run the R2 backup script daily at 4:20 AM
-    20 4 * * * /opt/r2_backup/r2-backup.sh > /dev/null 2>&1
+    20 4 * * * /opt/r2-backup/r2-backup.sh > /dev/null 2>&1
     ```
 
     -   `/opt/r2_backup/r2-backup.sh` is the absolute path to the script.

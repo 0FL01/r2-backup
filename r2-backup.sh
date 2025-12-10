@@ -22,8 +22,6 @@ source "$ENV_FILE"
 # Configuration variables (can be overridden in .env)
 ZSTD_LEVEL="${ZSTD_LEVEL:-3}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
-BACKUP_HOUR="${BACKUP_HOUR:-4}"
-BACKUP_MINUTE="${BACKUP_MINUTE:-20}"
 LOG_FILE="${LOG_FILE:-/var/log/r2-backup.log}"
 TEMP_DIR="${TEMP_DIR:-/tmp/r2-backup}"
 USE_TEMP_DIR="${USE_TEMP_DIR:-true}"
