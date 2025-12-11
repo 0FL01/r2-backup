@@ -21,7 +21,7 @@ source "$ENV_FILE"
 
 # Configuration variables (can be overridden in .env)
 ZSTD_LEVEL="${ZSTD_LEVEL:-3}"
-BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
+KEEP_BACKUPS="${KEEP_BACKUPS:-7}"
 LOG_FILE="${LOG_FILE:-/var/log/r2-backup.log}"
 TEMP_DIR="${TEMP_DIR:-/tmp/r2-backup}"
 USE_TEMP_DIR="${USE_TEMP_DIR:-true}"
@@ -448,20 +448,30 @@ EOF
 
 # Function to rotate old backups
 rotate_backups() {
-    log "Starting backup rotation (keeping last $BACKUP_RETENTION_DAYS days)"
+    log "Starting backup rotation (keeping last $KEEP_BACKUPS backups)"
     log "Endpoint: $R2_ENDPOINT"
     log "Bucket: $R2_BUCKET_NAME"
     log "Region: $R2_REGION"
     log "Prefix: ${BACKUP_NAME}_"
+
+    # Validate KEEP_BACKUPS
+    if [[ -z "${KEEP_BACKUPS:-}" ]]; then
+        log "Error: KEEP_BACKUPS is not set"
+        return 1
+    fi
+    if ! [[ "$KEEP_BACKUPS" =~ ^[0-9]+$ ]]; then
+        log "Error: KEEP_BACKUPS must be a non-negative integer, got '$KEEP_BACKUPS'"
+        return 1
+    fi
+    local keep_count=$((KEEP_BACKUPS))
+    if [[ $keep_count -lt 0 ]]; then
+        log "Error: KEEP_BACKUPS cannot be negative"
+        return 1
+    fi
     
     export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
     export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
     export AWS_DEFAULT_REGION="$R2_REGION"
-    
-    # Calculate the cutoff date in Unix epoch seconds
-    local cutoff_timestamp=$(date -d "$BACKUP_RETENTION_DAYS days ago" +%s)
-    local cutoff_date=$(date -d "$BACKUP_RETENTION_DAYS days ago" '+%Y-%m-%d %H:%M:%S')
-    log "Cutoff date for deletion: $cutoff_date (timestamp: $cutoff_timestamp)"
     
     # Get a list of all backup files in JSON format
     log "Getting list of all backup files..."
@@ -492,61 +502,42 @@ rotate_backups() {
         return 0
     fi
     
-    # Process each file
+
+    # Sort files by LastModified descending and split into keep/delete
+    local sorted_entries
+    sorted_entries=$(echo "$files_json" | jq -r '.Contents // [] | sort_by(.LastModified) | reverse | .[] | "\(.Key)|\(.LastModified)"' 2>/dev/null || echo "")
+
+    if [[ -z "$sorted_entries" ]]; then
+        log "No backup files found after parsing list response"
+        return 0
+    fi
+
+    local index=0
+    local kept_count=0
     local deleted_count=0
-    local total_files=0
-    
-    echo "$files_json" | jq -r '.Contents[]? | "\(.Key)|\(.LastModified)"' 2>/dev/null | while IFS='|' read -r key last_modified; do
-        if [[ -n "$key" ]]; then
-            total_files=$((total_files + 1))
-            
-            # Convert last modified date to timestamp
-            local file_timestamp
-            if file_timestamp=$(date -d "$last_modified" +%s 2>/dev/null); then
-                local file_date=$(date -d "$last_modified" '+%Y-%m-%d %H:%M:%S')
-                log "File: $key, date: $file_date (timestamp: $file_timestamp)"
-                
-                # Compare timestamps
-                if [[ $file_timestamp -le $cutoff_timestamp ]]; then
-                    log "Deleting old backup: $key (created: $file_date)"
-                    
-                    if aws s3 rm "s3://${R2_BUCKET_NAME}/${key}" --endpoint-url="$R2_ENDPOINT" 2>&1 | while IFS= read -r line; do
-                        log "AWS CLI (delete): $line"
-                    done; then
-                        log "File deleted successfully: $key"
-                        deleted_count=$((deleted_count + 1))
-                    else
-                        log "Error deleting file: $key"
-                    fi
-                else
-                    log "Keeping file: $key (created: $file_date, newer than $cutoff_date)"
-                fi
+
+    while IFS='|' read -r key last_modified; do
+        [[ -z "$key" ]] && continue
+
+        if (( index < keep_count )); then
+            log "Keeping file #$((index + 1)): $key (LastModified: $last_modified)"
+            kept_count=$((kept_count + 1))
+        else
+            log "Deleting old backup #$((index + 1)): $key (LastModified: $last_modified)"
+            if aws s3 rm "s3://${R2_BUCKET_NAME}/${key}" --endpoint-url="$R2_ENDPOINT" 2>&1 | while IFS= read -r line; do
+                log "AWS CLI (delete): $line"
+            done; then
+                deleted_count=$((deleted_count + 1))
+                log "File deleted successfully: $key"
             else
-                log "Error parsing date for file: $key ($last_modified)"
+                log "Error deleting file: $key"
             fi
         fi
-    done
-    
-    # Get final stats from variables (since the loop runs in a subshell)
-    deleted_count=0
-    kept_count=0
-    
-    echo "$files_json" | jq -r '.Contents[]? | "\(.Key)|\(.LastModified)"' 2>/dev/null | while IFS='|' read -r key last_modified; do
-        if [[ -n "$key" ]]; then
-            local file_timestamp
-            if file_timestamp=$(date -d "$last_modified" +%s 2>/dev/null); then
-                if [[ $file_timestamp -le $cutoff_timestamp ]]; then
-                    if aws s3 rm "s3://${R2_BUCKET_NAME}/${key}" --endpoint-url="$R2_ENDPOINT" >/dev/null 2>&1; then
-                        deleted_count=$((deleted_count + 1))
-                    fi
-                else
-                    kept_count=$((kept_count + 1))
-                fi
-            fi
-        fi
-    done
-    
-    log "Rotation complete: processed files: $file_count, deleted: $deleted_count, kept: $kept_count"
+
+        index=$((index + 1))
+    done <<< "$sorted_entries"
+
+    log "Rotation complete: processed files: $file_count, kept: $kept_count, deleted: $deleted_count"
     return 0
 }
 
