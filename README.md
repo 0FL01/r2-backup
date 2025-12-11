@@ -1,137 +1,137 @@
-# Cloudflare R2 Backup Script
+# Скрипт резервного копирования Cloudflare R2
 
-A simple yet powerful Bash script for creating compressed backups of specified directories and uploading them to a Cloudflare R2 bucket. It includes automatic backup rotation.
+Простой, но мощный Bash-скрипт для создания сжатых резервных копий выбранных директорий и загрузки их в бакет Cloudflare R2. Поддерживает автоматическую ротацию бэкапов.
 
-## Features
+## Возможности
 
--   Backup to any S3-compatible storage (pre-configured for Cloudflare R2).
--   High-speed and efficient compression using `zstd`.
--   Automatic rotation of old backups based on a retention period.
--   Configuration via a simple `.env` file.
--   Detailed logging of all operations.
--   Dependency checks to ensure the environment is ready.
--   Post-upload integrity validation: MD5 checksum match; for multipart uploads the script compares local and remote sizes to ensure identical space usage.
--   Reliable uploads with built-in retries and exponential backoff.
+-   Резервное копирование в любое S3-compatible хранилище (преднастроено для Cloudflare R2).
+-   Быстрая и эффективная компрессия с помощью `zstd`.
+-   Автоматическая ротация старых бэкапов по сроку хранения.
+-   Конфигурация через простой файл `.env`.
+-   Детализированное логирование всех операций.
+-   Проверка зависимостей, чтобы убедиться в готовности окружения.
+-   Проверка целостности после загрузки: совпадение MD5; для multipart загрузок скрипт сравнивает локальный и удаленный размер, чтобы убедиться, что занимаемое пространство совпадает.
+-   Надёжные загрузки с повторами и экспоненциальной задержкой.
 
-## Prerequisites
+## Предварительные требования
 
-Before you begin, ensure you have the following tools installed on your system:
+Перед началом убедитесь, что в системе установлены следующие инструменты:
 
--   `aws-cli` (v2 is recommended)
+-   `aws-cli` (рекомендуется v2)
 -   `zstd`
 -   `tar`
 -   `jq`
 
-You can install them on a Debian-based system (like Ubuntu) using:
+Установка в Debian-подобных системах (например, Ubuntu):
 
 ```bash
 sudo apt-get update && sudo apt-get install awscli zstd tar jq -y
 ```
 
-## Setup
+## Настройка
 
-1.  **Clone the Repository**
-    Clone this repository to your server.
+1.  **Клонировать репозиторий**
+    Клонируйте этот репозиторий на сервер.
     ```bash
     git clone https://github.com/0FL01/r2-backup.git
     cd r2_backup
     ```
 
-2.  **Make the Script Executable**
+2.  **Сделать скрипт исполняемым**
     ```bash
     chmod +x r2-backup.sh
     ```
 
-3.  **Create Configuration File**
-    Create a `.env` file in the root of the project directory. You can copy the provided example if one exists.
+3.  **Создать файл конфигурации**
+    Создайте файл `.env` в корне проекта. Можно скопировать готовый пример, если он есть.
     ```bash
     cp env.example .env
     ```
-    Now, open the `.env` file and add your configuration.
+    Затем откройте `.env` и добавьте свою конфигурацию.
 
-## Configuration
+## Конфигурация
 
-Edit the `.env` file with your specific parameters.
+Отредактируйте `.env` с вашими параметрами.
 
-### Required Parameters
+### Обязательные параметры
 
--   `R2_ENDPOINT`: Your full Cloudflare R2 endpoint URL.
--   `R2_ACCESS_KEY_ID`: Your R2 Access Key ID.
--   `R2_SECRET_ACCESS_KEY`: Your R2 Secret Access Key.
--   `R2_BUCKET_NAME`: The name of the R2 bucket where backups will be stored.
--   `BACKUP_PATHS`: A comma-separated list of absolute paths to the directories you want to back up.
-    -   **Example**: `BACKUP_PATHS="/var/www/my-site,/etc/nginx,/home/user/data"`
+-   `R2_ENDPOINT`: полный URL Cloudflare R2 endpoint.
+-   `R2_ACCESS_KEY_ID`: ваш R2 Access Key ID.
+-   `R2_SECRET_ACCESS_KEY`: ваш R2 Secret Access Key.
+-   `R2_BUCKET_NAME`: имя бакета R2, куда будут сохраняться бэкапы.
+-   `BACKUP_PATHS`: список абсолютных путей к директориям для бэкапа, через запятую.
+    -   **Пример**: `BACKUP_PATHS="/var/www/my-site,/etc/nginx,/home/user/data"`
 
-### Optional Parameters
+### Необязательные параметры
 
--   `BACKUP_NAME`: Base name for the archive stored in the bucket. Timestamp and extension are appended automatically. Default: current hostname.
--   `USE_ZSTD`: Toggle zstd compression. `true` (default) creates `.tar.zst` using `zstd`; `false` creates a plain `.tar` and does not require `zstd`.
--   `ZSTD_LEVEL`: The `zstd` compression level. Ranges from 1 (fastest) to 22 (highest compression). (Default: `3`).
--   `BACKUP_RETENTION_DAYS`: The number of days to keep backups. Older backups will be automatically deleted. (Default: `7`).
--   `LOG_FILE`: The absolute path to the log file. (Default: `/var/log/r2-backup.log`).
--   `TEMP_DIR`: A temporary directory for creating archives before upload. (Default: `/tmp/r2-backup`).
--   `USE_TEMP_DIR`: When `true` (default), archives are staged in `TEMP_DIR`. When `false`, the archive is created directly in the first path from `BACKUP_PATHS` (if a file is listed, its parent directory is used).
--   `R2_REGION`: The region for your bucket. (Default: `auto`).
+-   `BACKUP_NAME`: базовое имя архива в бакете. Timestamp и расширение добавляются автоматически. По умолчанию: текущее имя хоста.
+-   `USE_ZSTD`: включить/выключить `zstd`. `true` (по умолчанию) создаёт `.tar.zst` с `zstd`; `false` создаёт обычный `.tar` и не требует `zstd`.
+-   `ZSTD_LEVEL`: уровень компрессии `zstd` (1 — самый быстрый, 22 — максимальная компрессия). По умолчанию: `3`.
+-   `BACKUP_RETENTION_DAYS`: число дней хранения бэкапов. Старые архивы удаляются автоматически. По умолчанию: `7`.
+-   `LOG_FILE`: абсолютный путь к лог-файлу. По умолчанию: `/var/log/r2-backup.log`.
+-   `TEMP_DIR`: временная директория для сборки архива перед загрузкой. По умолчанию: `/tmp/r2-backup`.
+-   `USE_TEMP_DIR`: при `true` (по умолчанию) архив собирается в `TEMP_DIR`; при `false` создаётся прямо в первом пути из `BACKUP_PATHS` (если указан файл, используется его родительская директория).
+-   `R2_REGION`: регион бакета. По умолчанию: `auto`.
 
-## Usage
+## Использование
 
-### Manual Backup
+### Ручной запуск бэкапа
 
-To run a full backup process (create, upload, rotate) manually, simply execute the script:
+Чтобы вручную выполнить полный цикл (создание, загрузка, ротация), запустите:
 
 ```bash
 ./r2-backup.sh
 ```
 
-### Test Configuration
+### Проверка конфигурации
 
-To check if dependencies are installed and the configuration is readable without performing a backup, use the `--test` flag:
+Чтобы проверить наличие зависимостей и читаемость конфигурации без выполнения бэкапа, используйте флаг `--test`:
 
 ```bash
 ./r2-backup.sh --test
 ```
 
-### Rotate Backups Only
+### Только ротация бэкапов
 
-To run only the rotation part of the script to clean up old backups, use the `--rotate-only` flag:
+Чтобы запустить только ротацию и очистить старые бэкапы, используйте флаг `--rotate-only`:
 
 ```bash
 ./r2-backup.sh --rotate-only
 ```
 
-### Scheduling with Cron (Automated Backups)
+### Планирование через Cron (автоматические бэкапы)
 
-To automate the backup process, you can add a new job to your crontab.
+Чтобы автоматизировать запуск, добавьте задание в crontab.
 
-1. Copy exucutable files
+1. Скопируйте исполняемые файлы
    ```
    sudo mkdir -p /opt/r2-backup && sudo cp -a r2-backup.sh .env /opt/r2_backup/
    ```
 
 
-2.  Open the crontab editor:
+2.  Откройте редактор crontab:
     ```bash
     crontab -e
     ```
 
-3.  Add the following line to schedule the script to run daily at 04:20 AM. **Remember to use the absolute path to your `backup.sh` script.**
+3.  Добавьте строку для запуска скрипта ежедневно в 04:20. **Не забудьте указать абсолютный путь к вашему `backup.sh`.**
 
     ```crontab
     # Run the R2 backup script daily at 4:20 AM
     20 4 * * * /opt/r2-backup/r2-backup.sh > /dev/null 2>&1
     ```
 
-    -   `/opt/r2_backup/r2-backup.sh` is the absolute path to the script.
-    -   `> /dev/null 2>&1` prevents cron from sending emails with the script's output, as all output is already being logged to the file specified in `LOG_FILE`.
+    -   `/opt/r2_backup/r2-backup.sh` — абсолютный путь к скрипту.
+    -   `> /dev/null 2>&1` не даёт cron отправлять письма с выводом, так как всё уже пишется в `LOG_FILE`.
 
-## Integrity checks & retries
+## Проверки целостности и повторы
 
--   Each upload calculates a local MD5 hash; for single-part uploads the S3 ETag must match. If a multipart upload is detected, the script compares remote `ContentLength` with the local archive size to ensure the stored object uses the same space.
--   Uploads are retried up to 3 times with exponential backoff (starting at 5 seconds) and detailed logging of each attempt and AWS CLI response.
+-   Каждый upload считает локальный MD5; для single-part загрузок ETag S3 должен совпадать. Если обнаружен multipart upload, скрипт сравнивает `ContentLength` на удалённой стороне с размером локального архива, чтобы убедиться, что занимаемое место одинаковое.
+-   Загрузки повторяются до 3 раз с экспоненциальной задержкой (начиная с 5 секунд) и подробным логированием каждой попытки и ответа AWS CLI.
 
-## Logging
+## Логирование
 
-All script operations are logged to the file specified by the `LOG_FILE` variable in your `.env` file (default is `/var/log/r2-backup.log`). Check this file for detailed information and for troubleshooting any issues.
+Все операции скрипта пишутся в файл, указанный в `LOG_FILE` вашего `.env` (по умолчанию `/var/log/r2-backup.log`). Смотрите этот файл для подробностей и устранения неполадок.
 
 ```bash
 tail -f /var/log/r2-backup.log
